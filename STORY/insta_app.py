@@ -1,103 +1,70 @@
 import streamlit as st
 import asyncio
-import sys
 import os
 import nest_asyncio
 from playwright.async_api import async_playwright
 
-# 1. إعدادات التوافق مع أنظمة التشغيل والسحابة
-if sys.platform == 'win32':
-    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 nest_asyncio.apply()
 
-# 2. إعداد واجهة المستخدم
-st.set_page_config(page_title="Insta Chick Pro", page_icon="📸", layout="centered")
-
-st.markdown("""
-    <style>
-    .stButton>button {
-        width: 100%;
-        background-color: #e1306c;
-        color: white;
-        border-radius: 10px;
-        font-weight: bold;
-    }
-    </style>
-    """, unsafe_allow_html=True)
+st.set_page_config(page_title="Insta Chick Pro", page_icon="📸")
 
 st.title("📸 Insta Chick Pro")
-st.write("شاهد وحمل ستوريات إنستقرام للحسابات العامة بهوية مجهولة")
+st.write("شاهد ستوريات الحسابات العامة بمجهولية تامة")
 
-# 3. دالة جلب البيانات (المحرك الأساسي)
-async def get_insta_stories(username):
+async def get_stories(username):
     async with async_playwright() as p:
+        # محاولة تشغيل المتصفح مع إعدادات تجاوز الحماية
         try:
-            # تشغيل المتصفح، وفي حال فشله على السحابة يتم تثبيته تلقائياً
-            try:
-                browser = await p.chromium.launch(headless=True)
-            except Exception:
-                st.info("جاري تهيئة محرك المتصفح للمرة الأولى... قد يستغرق هذا دقيقة واحدة.")
-                os.system("playwright install chromium")
-                browser = await p.chromium.launch(headless=True)
+            browser = await p.chromium.launch(headless=True)
+        except Exception:
+            os.system("playwright install chromium")
+            browser = await p.chromium.launch(headless=True)
             
-            context = await browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            )
-            page = await context.new_page()
+        # إعداد المتصفح ليتصرف كأنه مستخدم حقيقي
+        context = await browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            viewport={'width': 1280, 'height': 720}
+        )
+        page = await context.new_page()
+        
+        try:
+            # استخدام موقع بديل أكثر استقراراً للجلب
+            await page.goto(f"https://snapinsta.app/ar/instagram-stories-viewer", timeout=60000)
+            await page.fill('input#url', username)
+            await page.click('button[type="submit"]')
             
-            # التوجه للموقع الوسيط للجلب
-            await page.goto(f"https://www.save-free.com/ar/insta-stories-viewer/", timeout=60000)
-            await page.fill('input#username', username)
-            await page.click('button#btn-view')
+            # انتظار معالجة الطلب (15 ثانية)
+            await asyncio.sleep(15) 
             
-            # انتظار ظهور النتائج لمدة 15 ثانية كحد أقصى
-            await page.wait_for_selector('.story-item', timeout=15000)
-            
-            stories_data = []
-            items = await page.query_selector_all('.story-item')
-            
-            for item in items:
-                img = await item.query_selector('img')
-                video = await item.query_selector('video source')
-                
-                if video:
-                    url = await video.get_attribute('src')
-                    stories_data.append({'type': 'video', 'url': url})
-                elif img:
-                    url = await img.get_attribute('src')
-                    stories_data.append({'type': 'image', 'url': url})
+            # جلب روابط الصور والفيديوهات
+            results = []
+            elements = await page.query_selector_all('a[download]')
+            for el in elements:
+                href = await el.get_attribute('href')
+                if href and "http" in href:
+                    results.append(href)
             
             await browser.close()
-            return stories_data
-            
+            return list(set(results)) # إزالة الروابط المكررة
         except Exception as e:
-            if 'browser' in locals(): await browser.close()
-            return None
+            await browser.close()
+            return f"Error: {e}"
 
-# 4. منطق التشغيل في الواجهة
-username_input = st.text_input("أدخل اسم المستخدم (بدون @):", placeholder="f.xzon")
+user_input = st.text_input("أدخل اسم المستخدم:")
 
-if st.button("عرض الستوريات الآن"):
-    if username_input:
-        with st.spinner("🚀 جاري استخراج الستوريات..."):
-            # تشغيل العملية بشكل غير متزامن
+if st.button("عرض الستوريات"):
+    if user_input:
+        with st.spinner("جاري جلب الستوريات... قد يستغرق الأمر ثوانٍ قليلة"):
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            stories = loop.run_until_complete(get_insta_stories(username_input))
+            stories = loop.run_until_complete(get_stories(user_input))
             
-            if stories:
-                st.success(f"✅ تم العثور على {len(stories)} ستوري")
-                cols = st.columns(2)
-                for idx, item in enumerate(stories):
-                    with cols[idx % 2]:
-                        if item['type'] == 'video':
-                            st.video(item['url'])
-                        else:
-                            st.image(item['url'], use_container_width=True)
-                        
-                        # رابط تحميل مباشر
-                        st.markdown(f"[📥 تحميل مباشرة]({item['url']})")
+            if isinstance(stories, list) and len(stories) > 0:
+                st.success(f"تم العثور على {len(stories)} عنصر")
+                for link in stories:
+                    if ".mp4" in link or "video" in link:
+                        st.video(link)
+                    else:
+                        st.image(link)
             else:
-                st.error("❌ لم يتم العثور على ستوريات. تأكد أن الحساب عام (Public) وليس خاصاً.")
-    else:
-        st.warning("⚠️ يرجى كتابة اسم المستخدم أولاً.")
+                st.error("فشل الجلب. جرب اسماً آخر أو تأكد أن الحساب لديه ستوري نشط الآن.")
